@@ -1,11 +1,17 @@
 import cv2
 import mediapipe as mp
-import pyttsx3
 import numpy as np
 import threading
-import queue
 import time
 from collections import deque
+
+# Import Windows TTS
+try:
+    import win32com.client
+    WINDOWS_TTS_AVAILABLE = True
+except ImportError:
+    WINDOWS_TTS_AVAILABLE = False
+    print("WARNING: Windows TTS not available!")
 
 class HandGestureSpeech:
     def __init__(self):
@@ -19,11 +25,40 @@ class HandGestureSpeech:
         )
         self.mp_draw = mp.solutions.drawing_utils
         
-        # Initialize TTS engine
-        self.tts_engine = pyttsx3.init()
-        self.tts_queue = queue.Queue()
-        self.tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
-        self.tts_thread.start()
+        # Initialize Windows TTS (SAPI)
+        self.tts_engine = None
+        if WINDOWS_TTS_AVAILABLE:
+            try:
+                print("Initializing Windows SAPI TTS...")
+                self.tts_engine = win32com.client.Dispatch("SAPI.SpVoice")
+                
+                # Get available voices
+                voices = self.tts_engine.GetVoices()
+                print(f"Found {voices.Count} voices:")
+                for i in range(voices.Count):
+                    voice = voices.Item(i)
+                    print(f"  {i}: {voice.GetDescription()}")
+                
+                # Set to female voice (Zira) - comment out the next 4 lines to use male voice instead
+                if voices.Count > 1:
+                    self.tts_engine.Voice = voices.Item(1)
+                    print(f"Using female voice: {voices.Item(1).GetDescription()}")
+                else:
+                    # Fallback to first voice if only one available
+                    self.tts_engine.Voice = voices.Item(0)
+                    print(f"Using voice: {voices.Item(0).GetDescription()}")
+                
+                # Uncomment the next 3 lines to use male voice (David) instead:
+                # if voices.Count > 0:
+                #     self.tts_engine.Voice = voices.Item(0)
+                #     print(f"Using male voice: {voices.Item(0).GetDescription()}")
+                    
+                print("Windows SAPI TTS initialized successfully!")
+            except Exception as e:
+                print(f"Error initializing Windows SAPI: {e}")
+                self.tts_engine = None
+        else:
+            print("Windows TTS not available on this system")
         
         # Gesture state management
         self.last_gesture = None
@@ -46,29 +81,39 @@ class HandGestureSpeech:
         self.prev_time = time.time()
         self.fps = 0
 
-    def _tts_worker(self):
-        """Background thread to handle TTS without blocking main loop"""
-        while True:
-            try:
-                text = self.tts_queue.get(timeout=1)
-                if text is None:
-                    break
-                self.tts_engine.say(text)
-                self.tts_engine.runAndWait()
-                self.tts_queue.task_done()
-            except queue.Empty:
-                continue
+    def speak(self, text):
+        """Speak text using Windows SAPI"""
+        if self.tts_engine is None:
+            print(f"Cannot speak: TTS engine not initialized")
+            return False
+            
+        try:
+            print(f"Speaking: '{text}'")
+            self.tts_engine.Speak(text)
+            print("Speech completed successfully")
+            return True
+        except Exception as e:
+            print(f"Error speaking text: {e}")
+            return False
 
-    def speak_async(self, text):
-        """Queue text for async TTS"""
-        if not self.tts_queue.empty():
-            # Clear queue to avoid backlog
-            while not self.tts_queue.empty():
-                try:
-                    self.tts_queue.get_nowait()
-                except queue.Empty:
-                    break
-        self.tts_queue.put(text)
+    def change_voice(self, voice_index):
+        """Change TTS voice"""
+        if self.tts_engine is None:
+            print("TTS engine not available")
+            return False
+            
+        try:
+            voices = self.tts_engine.GetVoices()
+            if 0 <= voice_index < voices.Count:
+                self.tts_engine.Voice = voices.Item(voice_index)
+                print(f"Voice changed to: {voices.Item(voice_index).GetDescription()}")
+                return True
+            else:
+                print(f"Invalid voice index: {voice_index}")
+                return False
+        except Exception as e:
+            print(f"Error changing voice: {e}")
+            return False
 
     def is_finger_extended(self, landmarks, handedness, finger_name):
         """
@@ -208,7 +253,11 @@ class HandGestureSpeech:
             current_time - self.last_spoken_time > self.cooldown):
             speech_text = self.gesture_speech_map.get(stable_gesture, "")
             if speech_text:
-                self.speak_async(speech_text)
+                # Create a new thread to handle speech so it doesn't block the UI
+                speech_thread = threading.Thread(target=self.speak, args=(speech_text,))
+                speech_thread.daemon = True
+                speech_thread.start()
+                
                 self.last_spoken_time = current_time
                 self.last_gesture = stable_gesture
         
@@ -267,11 +316,54 @@ class HandGestureSpeech:
         cap.release()
         cv2.destroyAllWindows()
         
-        # Stop TTS thread
-        self.tts_queue.put(None)
-        self.tts_thread.join(timeout=1)
+        print("Program terminated")
 
 
 if __name__ == "__main__":
+    print("=== Hand Gesture to Speech System ===")
+    
+    # Test Windows SAPI directly
+    if WINDOWS_TTS_AVAILABLE:
+        try:
+            print("Testing Windows SAPI...")
+            test_tts = win32com.client.Dispatch("SAPI.SpVoice")
+            test_tts.Speak("Test suara sistem")
+            print("Windows SAPI test completed successfully!")
+        except Exception as e:
+            print(f"Windows SAPI test failed: {e}")
+    else:
+        print("Windows TTS not available!")
+        exit(1)
+    
+    print("\n=== Starting Application ===")
+    
+    # Create application
     app = HandGestureSpeech()
+    
+    # Test application TTS
+    print("Testing application TTS...")
+    app.speak("Sistem Pengenalan Gestur Tangan Siap Digunakan")
+    
+    # Ask for voice preference
+    if app.tts_engine:
+        try:
+            voices = app.tts_engine.GetVoices()
+            if voices.Count > 1:
+                print(f"\nAvailable voices:")
+                for i in range(voices.Count):
+                    voice = voices.Item(i)
+                    desc = voice.GetDescription()
+                    print(f"  {i}: {desc}")
+                
+                print("Using default voice (0: David - Male). To change, modify the code.")
+                # Uncomment the next lines if you want to choose voice interactively:
+                # choice = input(f"Choose voice (0-{voices.Count-1}, or press Enter for default): ").strip()
+                # if choice.isdigit():
+                #     voice_idx = int(choice)
+                #     if app.change_voice(voice_idx):
+                #         app.speak("Suara telah diubah")
+        except Exception as e:
+            print(f"Error in voice selection: {e}")
+    
+    # Run the main application
     app.run()
